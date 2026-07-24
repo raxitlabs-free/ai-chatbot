@@ -1,7 +1,9 @@
 import { tool, type UIMessageStreamWriter } from "ai";
 import type { Session } from "next-auth";
 import { z } from "zod";
+import { toolPolicy } from "@/lib/ai/tools/authorize";
 import { getDocumentById, saveDocument } from "@/lib/db/queries";
+import { ChatbotError } from "@/lib/errors";
 import type { ChatMessage } from "@/lib/types";
 
 type EditDocumentProps = {
@@ -29,6 +31,20 @@ export const editDocument = ({ session, dataStream }: EditDocumentProps) =>
         ),
     }),
     execute: async ({ id, old_string, new_string, replace_all }) => {
+      const decision = toolPolicy.authorize({
+        userId: session.user?.id,
+        userType: session.user?.type,
+        toolName: "editDocument",
+      });
+      if (decision.effect !== "permit") {
+        throw new ChatbotError(
+          decision.reason === "unauthenticated"
+            ? "unauthorized:chat"
+            : "forbidden:chat",
+          decision.reason
+        );
+      }
+
       const document = await getDocumentById({ id });
 
       if (!document) {

@@ -1,8 +1,10 @@
 import { Output, streamText, tool, type UIMessageStreamWriter } from "ai";
 import type { Session } from "next-auth";
 import { z } from "zod";
+import { toolPolicy } from "@/lib/ai/tools/authorize";
 import { getDocumentById, saveSuggestions } from "@/lib/db/queries";
 import type { Suggestion } from "@/lib/db/schema";
+import { ChatbotError } from "@/lib/errors";
 import type { ChatMessage } from "@/lib/types";
 import { generateUUID } from "@/lib/utils";
 import { getLanguageModel } from "../providers";
@@ -29,6 +31,20 @@ export const requestSuggestions = ({
         ),
     }),
     execute: async ({ documentId }) => {
+      const decision = toolPolicy.authorize({
+        userId: session.user?.id,
+        userType: session.user?.type,
+        toolName: "requestSuggestions",
+      });
+      if (decision.effect !== "permit") {
+        throw new ChatbotError(
+          decision.reason === "unauthenticated"
+            ? "unauthorized:chat"
+            : "forbidden:chat",
+          decision.reason
+        );
+      }
+
       const document = await getDocumentById({ id: documentId });
 
       if (!document?.content) {

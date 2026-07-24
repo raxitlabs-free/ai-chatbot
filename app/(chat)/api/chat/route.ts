@@ -20,6 +20,7 @@ import {
 } from "@/lib/ai/models";
 import { type RequestHints, systemPrompt } from "@/lib/ai/prompts";
 import { getLanguageModel } from "@/lib/ai/providers";
+import { ALL_TOOL_NAMES, toolPolicy } from "@/lib/ai/tools/authorize";
 import { createDocument } from "@/lib/ai/tools/create-document";
 import { editDocument } from "@/lib/ai/tools/edit-document";
 import { getWeather } from "@/lib/ai/tools/get-weather";
@@ -191,21 +192,25 @@ export async function POST(request: Request) {
     const stream = createUIMessageStream({
       originalMessages: isToolApprovalFlow ? uiMessages : undefined,
       execute: async ({ writer: dataStream }) => {
+        // Reference monitor (deny-by-default): only expose the tools this user
+        // type is authorized for, so an injected prompt cannot reach a tool
+        // outside the policy. The per-tool execute() guards are the second
+        // layer and enforce the same decision at dispatch time.
+        const authorizedTools = ALL_TOOL_NAMES.filter((toolName) =>
+          toolPolicy.isAuthorized({
+            userId: session.user?.id,
+            userType,
+            toolName,
+          })
+        );
+
         const result = streamText({
           model: getLanguageModel(chatModel),
           system: systemPrompt({ requestHints, supportsTools }),
           messages: modelMessages,
           stopWhen: stepCountIs(5),
           experimental_activeTools:
-            isReasoningModel && !supportsTools
-              ? []
-              : [
-                  "getWeather",
-                  "createDocument",
-                  "editDocument",
-                  "updateDocument",
-                  "requestSuggestions",
-                ],
+            isReasoningModel && !supportsTools ? [] : authorizedTools,
           providerOptions: {
             ...(modelConfig?.gatewayOrder && {
               gateway: { order: modelConfig.gatewayOrder },
@@ -215,7 +220,7 @@ export async function POST(request: Request) {
             }),
           },
           tools: {
-            getWeather,
+            getWeather: getWeather({ session }),
             createDocument: createDocument({
               session,
               dataStream,
