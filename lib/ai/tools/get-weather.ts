@@ -1,5 +1,12 @@
 import { tool } from "ai";
+import type { Session } from "next-auth";
 import { z } from "zod";
+import { toolPolicy } from "@/lib/ai/tools/authorize";
+import { ChatbotError } from "@/lib/errors";
+
+type GetWeatherProps = {
+  session: Session;
+};
 
 async function geocodeCity(
   city: string
@@ -29,50 +36,68 @@ async function geocodeCity(
   }
 }
 
-export const getWeather = tool({
-  description:
-    "Get the current weather at a location. You can provide either coordinates or a city name.",
-  inputSchema: z.object({
-    latitude: z.number().optional(),
-    longitude: z.number().optional(),
-    city: z
-      .string()
-      .describe("City name (e.g., 'San Francisco', 'New York', 'London')")
-      .optional(),
-  }),
-  execute: async (input) => {
-    let latitude: number;
-    let longitude: number;
+export const getWeather = ({ session }: GetWeatherProps) =>
+  tool({
+    description:
+      "Get the current weather at a location. You can provide either coordinates or a city name.",
+    inputSchema: z.object({
+      latitude: z.number().optional(),
+      longitude: z.number().optional(),
+      city: z
+        .string()
+        .describe("City name (e.g., 'San Francisco', 'New York', 'London')")
+        .optional(),
+    }),
+    execute: async (input) => {
+      const decision = toolPolicy.authorize({
+        userId: session.user?.id,
+        userType: session.user?.type,
+        toolName: "getWeather",
+      });
+      if (decision.effect !== "permit") {
+        throw new ChatbotError(
+          decision.reason === "unauthenticated"
+            ? "unauthorized:chat"
+            : "forbidden:chat",
+          decision.reason
+        );
+      }
 
-    if (input.city) {
-      const coords = await geocodeCity(input.city);
-      if (!coords) {
+      let latitude: number;
+      let longitude: number;
+
+      if (input.city) {
+        const coords = await geocodeCity(input.city);
+        if (!coords) {
+          return {
+            error: `Could not find coordinates for "${input.city}". Please check the city name.`,
+          };
+        }
+        latitude = coords.latitude;
+        longitude = coords.longitude;
+      } else if (
+        input.latitude !== undefined &&
+        input.longitude !== undefined
+      ) {
+        latitude = input.latitude;
+        longitude = input.longitude;
+      } else {
         return {
-          error: `Could not find coordinates for "${input.city}". Please check the city name.`,
+          error:
+            "Please provide either a city name or both latitude and longitude coordinates.",
         };
       }
-      latitude = coords.latitude;
-      longitude = coords.longitude;
-    } else if (input.latitude !== undefined && input.longitude !== undefined) {
-      latitude = input.latitude;
-      longitude = input.longitude;
-    } else {
-      return {
-        error:
-          "Please provide either a city name or both latitude and longitude coordinates.",
-      };
-    }
 
-    const response = await fetch(
-      `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m&hourly=temperature_2m&daily=sunrise,sunset&timezone=auto`
-    );
+      const response = await fetch(
+        `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m&hourly=temperature_2m&daily=sunrise,sunset&timezone=auto`
+      );
 
-    const weatherData = await response.json();
+      const weatherData = await response.json();
 
-    if ("city" in input) {
-      weatherData.cityName = input.city;
-    }
+      if ("city" in input) {
+        weatherData.cityName = input.city;
+      }
 
-    return weatherData;
-  },
-});
+      return weatherData;
+    },
+  });
